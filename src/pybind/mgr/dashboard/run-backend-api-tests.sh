@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+set -x
+
 # cross shell: Are we sourced?
 # Source: https://stackoverflow.com/a/28776166/3185053
 ([[ -n $ZSH_EVAL_CONTEXT && $ZSH_EVAL_CONTEXT =~ :file$ ]] ||
