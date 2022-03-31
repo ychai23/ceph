@@ -8,6 +8,12 @@ import datetime
 import yaml
 from prettytable import PrettyTable
 
+try:
+    from natsort import natsorted
+except ImportError:
+    # fallback to normal sort
+    natsorted = sorted  # type: ignore
+
 from ceph.deployment.inventory import Device
 from ceph.deployment.drive_group import DriveGroupSpec, DeviceSelection, OSDMethod
 from ceph.deployment.service_spec import PlacementSpec, ServiceSpec, service_spec_allow_invalid_from_json
@@ -400,7 +406,7 @@ class OrchestratorCli(OrchestratorClientMixin, MgrModule,
             table.align = 'l'
             table.left_padding_width = 0
             table.right_padding_width = 2
-            for host in sorted(hosts, key=lambda h: h.hostname):
+            for host in natsorted(hosts, key=lambda h: h.hostname):
                 table.add_row((host.hostname, host.addr, ' '.join(
                     host.labels), host.status.capitalize()))
             output = table.get_string()
@@ -435,8 +441,7 @@ class OrchestratorCli(OrchestratorClientMixin, MgrModule,
         raise_if_exception(completion)
         return HandleCommandResult(stdout=completion.result_str())
 
-    @_cli_write_command(
-        'orch host maintenance enter')
+    @_cli_write_command('orch host maintenance enter')
     def _host_maintenance_enter(self, hostname: str, force: bool = False) -> HandleCommandResult:
         """
         Prepare a host for maintenance by shutting down and disabling all Ceph daemons (cephadm only)
@@ -446,8 +451,7 @@ class OrchestratorCli(OrchestratorClientMixin, MgrModule,
 
         return HandleCommandResult(stdout=completion.result_str())
 
-    @_cli_write_command(
-        'orch host maintenance exit')
+    @_cli_write_command('orch host maintenance exit')
     def _host_maintenance_exit(self, hostname: str) -> HandleCommandResult:
         """
         Return a host from maintenance, restarting all Ceph daemons (cephadm only)
@@ -509,7 +513,7 @@ class OrchestratorCli(OrchestratorClientMixin, MgrModule,
             table.left_padding_width = 0
             table.right_padding_width = 2
             now = datetime_now()
-            for host_ in sorted(inv_hosts, key=lambda h: h.name):  # type: InventoryHost
+            for host_ in natsorted(inv_hosts, key=lambda h: h.name):  # type: InventoryHost
                 for d in sorted(host_.devices.devices, key=lambda d: d.path):  # type: Device
 
                     led_ident = 'N/A'
@@ -687,7 +691,7 @@ class OrchestratorCli(OrchestratorClientMixin, MgrModule,
             table._align['MEM LIM'] = 'r'
             table.left_padding_width = 0
             table.right_padding_width = 2
-            for s in sorted(daemons, key=lambda s: s.name()):
+            for s in natsorted(daemons, key=lambda d: d.name()):
                 if s.status_desc:
                     status = s.status_desc
                 else:
@@ -801,7 +805,7 @@ Usage:
                 method=method,
             )
         except (TypeError, KeyError, ValueError) as e:
-            msg = f"Invalid host:device spec: '{svc_arg}': {e}" + usage
+            msg = f"Invalid 'host:device' spec: '{svc_arg}': {e}" + usage
             return HandleCommandResult(-errno.EINVAL, stderr=msg)
 
         completion = self.create_osds(drive_group)

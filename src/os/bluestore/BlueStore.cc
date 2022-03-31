@@ -9150,16 +9150,17 @@ int BlueStore::_fsck_on_open(BlueStore::FSCKDepth depth, bool repair)
   if (bluefs) {
     interval_set<uint64_t> bluefs_extents;
 
-    int r = bluefs->get_block_extents(bluefs_layout.shared_bdev, &bluefs_extents);
-    ceph_assert(r == 0);
-    for (auto [start, len] : bluefs_extents) {
-      apply_for_bitset_range(start, len, alloc_size, used_blocks,
-        [&](uint64_t pos, mempool_dynamic_bitset& bs) {
-          ceph_assert(pos < bs.size());
-          bs.set(pos);
-        }
-      );
-    }
+    bluefs->foreach_block_extents(
+      bluefs_layout.shared_bdev,
+      [&](uint64_t start, uint32_t len) {
+        apply_for_bitset_range(start, len, alloc_size, used_blocks,
+          [&](uint64_t pos, mempool_dynamic_bitset& bs) {
+            ceph_assert(pos < bs.size());
+            bs.set(pos);
+          }
+        );
+      }
+    );
   }
 
   bluefs_used_blocks = used_blocks;
@@ -15326,9 +15327,9 @@ int BlueStore::_do_alloc_write(
 	      }
 	    }
           }
-          return boost::optional<CompressorRef>(cp);
+          return std::optional<CompressorRef>(cp);
         }
-        return boost::optional<CompressorRef>();
+        return std::optional<CompressorRef>();
       }
     );
 
@@ -15338,9 +15339,9 @@ int BlueStore::_do_alloc_write(
       [&]() {
         double val;
         if (coll->pool_opts.get(pool_opts_t::COMPRESSION_REQUIRED_RATIO, &val)) {
-          return boost::optional<double>(val);
+          return std::optional<double>(val);
         }
-        return boost::optional<double>();
+        return std::optional<double>();
       }
     );
   }
@@ -15353,9 +15354,9 @@ int BlueStore::_do_alloc_write(
     [&]() {
       int64_t val;
       if (coll->pool_opts.get(pool_opts_t::CSUM_TYPE, &val)) {
-        return boost::optional<int64_t>(val);
+        return std::optional<int64_t>(val);
       }
-      return boost::optional<int64_t>();
+      return std::optional<int64_t>();
     }
   );
 
@@ -15372,7 +15373,7 @@ int BlueStore::_do_alloc_write(
 
       // FIXME: memory alignment here is bad
       bufferlist t;
-      boost::optional<int32_t> compressor_message;
+      std::optional<int32_t> compressor_message;
       int r = c->compress(wi.bl, t, compressor_message);
       uint64_t want_len_raw = wi.blob_length * crr;
       uint64_t want_len = p2roundup(want_len_raw, min_alloc_size);
@@ -15808,10 +15809,10 @@ void BlueStore::_choose_write_options(
     [&]() {
       string val;
       if (c->pool_opts.get(pool_opts_t::COMPRESSION_MODE, &val)) {
-	return boost::optional<Compressor::CompressionMode>(
+	return std::optional<Compressor::CompressionMode>(
 	  Compressor::get_comp_mode_type(val));
       }
-      return boost::optional<Compressor::CompressionMode>();
+      return std::optional<Compressor::CompressionMode>();
     }
   );
 
@@ -15844,9 +15845,9 @@ void BlueStore::_choose_write_options(
         [&]() {
           int64_t val;
           if (c->pool_opts.get(pool_opts_t::COMPRESSION_MAX_BLOB_SIZE, &val)) {
-   	    return boost::optional<uint64_t>((uint64_t)val);
+   	    return std::optional<uint64_t>((uint64_t)val);
           }
-          return boost::optional<uint64_t>();
+          return std::optional<uint64_t>();
         }
       );
     }
@@ -15858,9 +15859,9 @@ void BlueStore::_choose_write_options(
         [&]() {
           int64_t val;
           if (c->pool_opts.get(pool_opts_t::COMPRESSION_MIN_BLOB_SIZE, &val)) {
-   	    return boost::optional<uint64_t>((uint64_t)val);
+   	    return std::optional<uint64_t>((uint64_t)val);
           }
-          return boost::optional<uint64_t>();
+          return std::optional<uint64_t>();
         }
       );
     }
@@ -18260,36 +18261,6 @@ int BlueStore::invalidate_allocation_file_on_bluefs()
 }
 
 //-----------------------------------------------------------------------------------
-// load bluefs extents into bluefs_extents_vec
-int load_bluefs_extents(BlueFS                *bluefs,
-			bluefs_layout_t       *bluefs_layout,
-			CephContext*           cct,
-			const std::string     &path,
-			std::vector<extent_t> &bluefs_extents_vec,
-			uint64_t               min_alloc_size)
-{
-  if (! bluefs) {
-    dout(5) <<  "No BlueFS device found!!" << dendl;
-    return 0;
-  }
-
-  interval_set<uint64_t> bluefs_extents;
-  int ret = bluefs->get_block_extents(bluefs_layout->shared_bdev, &bluefs_extents);
-  if (ret < 0) {
-    derr  <<  "failed bluefs->get_block_extents()!!" << dendl;
-    return ret;
-  }
-
-  for (auto itr = bluefs_extents.begin(); itr != bluefs_extents.end(); itr++) {
-    extent_t e = { .offset = itr.get_start(), .length = itr.get_len() };
-    bluefs_extents_vec.push_back(e);
-  }
-
-  dout(5) <<  "BlueFS extent_count=" << bluefs_extents_vec.size() << dendl;
-  return 0;
-}
-
-//-----------------------------------------------------------------------------------
 int BlueStore::copy_allocator(Allocator* src_alloc, Allocator* dest_alloc, uint64_t* p_num_entries)
 {
   *p_num_entries = 0;
@@ -19062,15 +19033,13 @@ int BlueStore::add_existing_bluefs_allocation(Allocator* allocator, read_alloc_s
   // then add space used by bluefs to store rocksdb
   unsigned extent_count = 0;
   if (bluefs) {
-    interval_set<uint64_t> bluefs_extents;
-    int ret = bluefs->get_block_extents(bluefs_layout.shared_bdev, &bluefs_extents);
-    if (ret < 0) {
-      return ret;
-    }
-    for (auto itr = bluefs_extents.begin(); itr != bluefs_extents.end(); extent_count++, itr++) {
-      allocator->init_rm_free(itr.get_start(), itr.get_len());
-      stats.extent_count++;
-    }
+    bluefs->foreach_block_extents(
+      bluefs_layout.shared_bdev,
+      [&](uint64_t start, uint32_t len) {
+        allocator->init_rm_free(start, len);
+        stats.extent_count++;
+      }
+    );
   }
 
   dout(5) << "bluefs extent_count=" << extent_count << dendl;
@@ -19160,13 +19129,12 @@ Allocator* BlueStore::clone_allocator_without_bluefs(Allocator *src_allocator)
   // BlueFS stores its internal allocation outside RocksDB (FM) so we should not destage them to the allcoator-file
   // we are going to hide bluefs allocation during allocator-destage as they are stored elsewhere
   {
-    std::vector<extent_t> bluefs_extents_vec;
-    // load current bluefs internal allocation into a vector
-    load_bluefs_extents(bluefs, &bluefs_layout, cct, path, bluefs_extents_vec, min_alloc_size);
-    // then remove them from the shared allocator before dumping it to disk (bluefs stored them internally)
-    for (auto itr = bluefs_extents_vec.begin(); itr != bluefs_extents_vec.end(); ++itr) {
-      allocator->init_add_free(itr->offset, itr->length);
-    }
+    bluefs->foreach_block_extents(
+      bluefs_layout.shared_bdev,
+      [&] (uint64_t start, uint32_t len) {
+        allocator->init_add_free(start, len);
+      }
+    );
   }
 
   return allocator;

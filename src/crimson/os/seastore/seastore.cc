@@ -345,6 +345,10 @@ SeaStore::mkfs_ertr::future<> SeaStore::mkfs(uuid_d new_osd_fsid)
         transaction_manager->add_segment_manager(segment_manager.get());
         return transaction_manager->mkfs();
       }).safe_then([this] {
+        for (auto& sec_sm : secondaries) {
+          transaction_manager->add_segment_manager(sec_sm.get());
+        }
+        transaction_manager->add_segment_manager(segment_manager.get());
         return transaction_manager->mount();
       }).safe_then([this] {
         return repeat_eagain([this] {
@@ -1153,6 +1157,10 @@ SeaStore::tm_ret SeaStore::_do_transaction_step(
 	std::move(first), std::move(last));
     }
     break;
+    case Transaction::OP_OMAP_CLEAR:
+    {
+      return _omap_clear(ctx, get_onode(op->oid));
+    }
     case Transaction::OP_COLL_HINT:
     {
       ceph::bufferlist hint;
@@ -1275,6 +1283,37 @@ SeaStore::tm_ret SeaStore::_omap_set_header(
   DEBUGT("{} {} bytes", *ctx.transaction, *onode, header.length());
   assert(0 == "not supported yet");
   return tm_iertr::now();
+}
+
+SeaStore::tm_ret SeaStore::_omap_clear(
+  internal_context_t &ctx,
+  OnodeRef &onode)
+{
+  LOG_PREFIX(SeaStore::_omap_clear);
+  DEBUGT("{} {} keys", *ctx.transaction, *onode);
+  if (auto omap_root = onode->get_layout().omap_root.get(
+    onode->get_metadata_hint(segment_manager->get_block_size()));
+    omap_root.is_null()) {
+    return seastar::now();
+  } else {
+    return seastar::do_with(
+      BtreeOMapManager(*transaction_manager),
+      onode->get_layout().omap_root.get(
+        onode->get_metadata_hint(segment_manager->get_block_size())),
+      [&ctx, &onode](
+      auto &omap_manager,
+      auto &omap_root) {
+      return omap_manager.omap_clear(
+        omap_root,
+        *ctx.transaction)
+      .si_then([&] {
+        if (omap_root.must_update()) {
+          onode->get_mutable_layout(*ctx.transaction
+          ).omap_root.update(omap_root);
+        }
+      });
+    });
+  }
 }
 
 SeaStore::tm_ret SeaStore::_omap_rmkeys(
@@ -1621,27 +1660,7 @@ seastar::future<std::unique_ptr<SeaStore>> make_seastore(
   return SegmentManager::get_segment_manager(
     device
   ).then([&device](auto sm) {
-    auto scanner = std::make_unique<ExtentReader>();
-    auto& scanner_ref = *scanner.get();
-    auto segment_cleaner = std::make_unique<SegmentCleaner>(
-      SegmentCleaner::config_t::get_default(),
-      std::move(scanner),
-      false /* detailed */);
-
-    auto journal = journal::make_segmented(*sm, scanner_ref, *segment_cleaner);
-    auto epm = std::make_unique<ExtentPlacementManager>();
-    auto cache = std::make_unique<Cache>(scanner_ref, *epm);
-    auto lba_manager = lba_manager::create_lba_manager(*sm, *cache);
-
-    auto tm = std::make_unique<TransactionManager>(
-      *sm,
-      std::move(segment_cleaner),
-      std::move(journal),
-      std::move(cache),
-      std::move(lba_manager),
-      std::move(epm),
-      scanner_ref);
-
+    auto tm = make_transaction_manager(*sm, false /* detailed */);
     auto cm = std::make_unique<collection_manager::FlatCollectionManager>(*tm);
     return std::make_unique<SeaStore>(
       device,

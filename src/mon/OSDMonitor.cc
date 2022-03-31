@@ -899,13 +899,13 @@ void OSDMonitor::update_from_paxos(bool *need_bootstrap)
       t = MonitorDBStore::TransactionRef();
       tx_size = 0;
     }
-    for (const auto [osd, state] : inc.new_state) {
+    for (auto [osd, state] : inc.new_state) {
       if (state & CEPH_OSD_UP) {
 	// could be marked up *or* down, but we're too lazy to check which
 	last_osd_report.erase(osd);
       }
     }
-    for (const auto [osd, weight] : inc.new_weight) {
+    for (auto [osd, weight] : inc.new_weight) {
       if (weight == CEPH_OSD_OUT) {
         // manually marked out, so drop it
         osd_epochs.erase(osd);
@@ -3058,8 +3058,14 @@ bool OSDMonitor::prepare_mark_me_down(MonOpRequestRef op)
   ceph_assert(osdmap.is_up(target_osd));
   ceph_assert(osdmap.get_addrs(target_osd) == m->target_addrs);
 
-  mon.clog->info() << "osd." << target_osd << " marked itself down";
+  mon.clog->info() << "osd." << target_osd << " marked itself " << ((m->down_and_dead) ? "down and dead" : "down");
   pending_inc.new_state[target_osd] = CEPH_OSD_UP;
+  if (m->down_and_dead) {
+    if (!pending_inc.new_xinfo.count(target_osd)) {
+      pending_inc.new_xinfo[target_osd] = osdmap.osd_xinfo[target_osd];
+    }
+    pending_inc.new_xinfo[target_osd].dead_epoch = m->get_epoch();
+  }
   if (m->request_ack)
     wait_for_finished_proposal(op, new C_AckMarkedDown(this, op));
   return true;
